@@ -1,0 +1,860 @@
+---
+title: "Biostatistics projects: Project 3"
+author: "Yael Rosen Lang"
+date: "8 12 2021"
+Author: "Yael Rosen Lang, ID 035801901"
+output:
+  rmdformats::readthedown:
+    use_bookdown: TRUE
+---
+```{r setup, include=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(rmdformats)
+library(bookdown)
+library(pander)
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE, results='asis')
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+library(tidyverse)
+library(Hmisc)
+library(lme4)
+library(lmerTest)
+library(interactions)
+library(sjPlot)
+library(huxtable)
+library("readxl")
+
+```
+
+#  Abstract
+**Aim**- This study's goal was to investigate the effect of a biofeedback stress reduction intervention on pain among people with chronic low back pain.   
+**Methods**- Heart rate variability (HRV) was used to assess autonomic function, with high HRV indicating high activity of the parasympathetic nervous system (low stress levels) and low HRV indicating dominance of the sympathetic nervous system (high stress levels).   
+Participants practiced with HRV biofeedback for up to 12 weeks in order to down-regulate their sympathetic nervous system and lower their stress levels. We tested the efficacy of this biofeedback training program, and the hypothesis that stress levels mediate the intervention's effect on pain levels.   
+**Results**- Pain decreased over time, mostly during the first 3 weeks and for people with a high baseline pain level (7-10/10), but no statistically significant correlation was found between the intervention and pain. In addition, stress was not a statistically significant mediator of the effect of the intervention on pain.  
+**Conclusions**- further research is warranted due to design and analysis limitations. 
+
+#  Data preparation
+The data was imported from excel to R (R Core Team (2020). R: A language and environment for statistical computing. R Foundation for Statistical Computing, Vienna, Austria. URL https://www.R-project.org/.)  
+Our data set consisted of 5,753 observations from 983 participants. 
+
+```{r}
+data=read_xlsx(path='F:/My Documents/MPH/Biostatistics_projects/3 HRV biofeedback/pr3_stud.xlsx', 
+                sheet="pr3_stud", guess_max = 5000, na=c("-99", "NA"))
+#renaming
+names(data)[names(data)=='avg_pain']<-'pain'
+names(data)[names(data)=='avg_stress']<-'stress'
+names(data)[names(data)=='weight_in_kg']<-'weight'
+names(data)[names(data)=='height_in_cm']<-'height'
+names(data)[names(data)=='age_in_years']<-'age'
+names(data)[names(data)=='days_training_in_week']<-'days_per_week'
+names(data)[names(data)=='no_stress_duration_in_min']<-'no_stress_duration'
+names(data)[names(data)=='stress_duration_in_min']<-'stress_duration'
+names(data)[names(data)=='total_duration_in_min']<-'duration'
+
+#formatting categorical variable
+data$gender<-factor(data$gender, levels=c("Male", "Female"))
+Hmisc::label(data$gender)<-"Gender"
+
+#labeling
+Hmisc::label(data$weight)<-"Weight (Kg)"
+Hmisc::label(data$height)<-"Height (cm)"
+Hmisc::label(data$age)<-"Age (years)"
+Hmisc::label(data$no_stress_duration)<-"Duration of reduced stress (min)"
+Hmisc::label(data$stress_duration)<-"Duration of stress (min)"
+Hmisc::label(data$pain)<-"Weekly average pain level (1-10)"
+Hmisc::label(data$stress)<-"Weekly average stress level (1-10)"
+Hmisc::label(data$days_per_week)<-"Training days per week"
+```
+
+Our **outcome variables** were:  
+1. Weekly average pain level on a 1-10 scale (pain).  
+2. Weekly average stress level on a 1-10 scale (stress).  
+3. Weekly training duration in minutes (training duration).   
+
+**Missing data**: There were no missing values for training duration (this information was collected automatically for each training session).  
+Pain and stress, however, were missing in 2,617 observations (45.5%). All observations for which the pain level was missing were also missing the stress level and vice versa, as can be seen in the plot below.
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Missing values for outcome variables pain and stress"}
+library(naniar)
+mdf<-data.frame(data[,c("pain", "stress")])
+vis_miss(mdf)
+```
+
+Observations for which there were missing values for our outcome variables could not be used in the analysis and they were omitted.   
+The remaining 3,136 observations belonged to 954 participants. Participants who had only one observation were not useful for understanding trends and effectiveness over time, and were also omitted from the data set.   
+Our final data set consisted of 2,959 observations from 777 participants.
+
+**Data validation and cleaning**  
+The data was checked for out-of-range values, outliers and inconsistencies.  
+Histograms were plotted to identify outliers, defined as data points that are non consecutive. A cut-off was drawn before the a gap, and all outliers were assigned the maximal consecutive value.  
+**Age**- there were 3 observations for one participant with an out-of-range value that was adjusted to the median age, 38 years.   
+**Height**- there were 2 observations with outlier value for height, for one female participant with a height of 210 cm. they were assigned the maximal consecutive value of height for women, which was 185 cm.  
+**Reduced stress duration and stress duration**- observations with outliers (11 and 5 respectively, 15 total) were identified and assigned the maximum consecutive value (4300 and 1600, respectively).  
+Total duration was re-calculated as the sum of reduced stress and stress duration.  
+
+```{r}
+#omitting observations with missing values for pain and stress
+data<-data%>% filter(!is.na(data$pain))#%>%filter(!is.na(data$stress))
+#eliminating participants with a single observation
+data<-data %>% group_by(id) %>% filter(n()>1)
+#777 participants, 2,959 observations
+
+#adding a variable of number of weeks for each participant
+weeks_num<-data %>% group_by(id) %>% summarise(count=n())
+data<-merge(data, weeks_num, by=c("id"))
+Hmisc::label(data$count)<-"Number of weeks"
+
+#ordering each participant's observations by chronological order
+data<-arrange(data, id, week_index)
+
+#creating time variable for each participant (1st observation is time=0)
+#creating a df with id and 1st week index for each participant
+week0<-data[!duplicated(data$id),] %>% dplyr::select(id, week_index)
+data<-merge(data, week0, by=c("id"))
+names(data)[names(data)=='week_index.x']<-'week_index'
+data$time<-data$week_index-data$week_index.y+1
+Hmisc::label(data$time)<-"Time (weeks)"
+data<-data%>% dplyr::select(-week_index.y)
+
+#creating  baseline pain variable
+bsdf<-data[!duplicated(data$id),] %>% dplyr::select(id, pain)
+data<-merge(data, bsdf, by=c("id"))
+data$pain_group[data$pain.y>6]<-3
+data$pain_group[data$pain.y<7 & data$pain.y>3]<-2
+data$pain_group[data$pain.y<4]<-1
+data$pain_group<-factor(data$pain_group, levels=c(1,2,3), labels=c("1-3/10", "4-6/10", "7-10/10"))
+Hmisc::label(data$pain_group)<-"Baseline pain level group"
+
+names(data)[names(data)=='pain.x']<-'pain'
+names(data)[names(data)=='pain.y']<-'Baseline pain level'
+
+#creating variables
+#BMI
+data$BMI<-data$weight/(data$height/100)^2
+Hmisc::label(data$BMI)<-"Body Mass Index (kg/m^2)"
+
+#proportion of training time in which there was no stress
+data$success<-data$no_stress_duration/data$duration*10
+#summary(data$success)
+Hmisc::label(data$success)<-"Stress reduction"
+
+#success group
+data$success_group<-ifelse(data$success>7.5, 1,0)
+data$success_group<-factor(data$success_group, levels=c(0,1), labels = c("No", "Yes"))
+Hmisc::label(data$success_group)<-"Success in reducing stress"
+
+#overweight
+data$obese<-ifelse(data$BMI>24.9, 1,0)
+data$obese<-factor(data$obese, levels=c(0,1) ,labels=c("No", "Yes"))
+Hmisc::label(data$obese)<-"Overweight"
+
+data$age_group[data$age<30]<-1
+data$age_group[data$age>29 & data$age<50]<-2
+data$age_group[data$age>49]<-3
+data$age_group<-factor(data$age_group, levels=c(1,2,3), labels=c("Under 30", "30-49", "50+"))
+Hmisc::label(data$age_group)<-"Age group"
+
+#adjusting un-trusted/out-of-range values/outliers
+data$height[data$height==210]<-185
+data$age[data$age<0]<-38
+
+data$no_stress_duration[data$no_stress_duration>4300]<-4300
+data$stress_duration[data$stress_duration>1600]<-1600
+
+#data consistency
+data$duration=data$no_stress_duration+data$stress_duration
+Hmisc::label(data$duration)<-"Training duration per week (min)"
+
+#scaling duration by 1/100
+data$durations<-data$duration/100
+Hmisc::label(data$durations)<-"Training duration (scaled by 1/100)"
+
+#time variables for piecewise models
+data$t1_3<-ifelse(data$time<4, data$time, 4)
+data$t4_12<-ifelse(data$time>3, data$time-2, 1)
+Hmisc::label(data$t1_3)<-"Weeks 1-3"
+Hmisc::label(data$t4_12)<-"Weeks 4-12"
+```
+
+# Sample description
+Our sample was described by demographic and clinical characteristics.
+
+```{r}
+library(table1)
+library(Hmisc)
+t1<-data[!duplicated(data$id),]
+
+table1(~gender+age + age_group+ BMI +obese+pain + stress, data=t1, 
+       caption= "Socio-demographic and clinical characteristics",
+       overall="Total")
+```
+
+Our sample of 777 participants had 42% male participants and 58% females. The mean age was 41 years (SD=13.5), most of the participants (61%) were between 30 and 49 years old.  
+the average BMI was 24.4 (SD=4.35), and 38% of participants were overweight (BMI>24.9).   The average baseline pain level was 7.11 (SD=1.86), and average baseline stress level was 3.71 (SD=2.24).  
+
+# Descriptive statistics
+Our variables are described, variables that had a statistically significant difference between males and females were also described by gender.
+
+**Age**   
+Age shows a right asymmetric distribution, with 75% of the participants under 48 years.
+The median age is 37 years (IQR= (31, 47)).  
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Distribution of age"}
+df<-unclass(summary(t1$age))%>%round(digits=0)
+knitr::kable(t(df), align = "l", caption="Distribution of age" )
+
+ggplot(t1, aes(x=age))+geom_histogram(binwidth = 2)+
+  xlab("Age (years)")
+```
+
+**Body mass index**  
+BMI had a right asymmetric distribution, with a long right tail. The median is 24 kg/m^2.  
+
+```{r bmi}
+df<-unclass(summary(t1$BMI))%>%round(digits=1)
+knitr::kable(t(df), align = "l", caption="Distribution of BMI" )
+```
+
+The average BMI was higher for males (25.4 vs. 23.8 for females), and a larger proportion of males are overweight (47.5% vs. 31%, right of the vertical black line).
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Distribution of BMI by gender"}
+#BMI for males and females
+ggdensity(t1, x = "BMI", add = "mean", rug = TRUE,
+   color = "gender", fill = "gender",
+   palette = c("#00AFBB", "#E7B800"))+ggtitle("Body mass index by gender")+
+  geom_vline(xintercept=24.9)+annotate("text",x=35, y=0.12, label="BMI>24.9: overweight")
+```
+
+**Baseline and weekly average pain level (0-10)**  
+Most participants (75%) had a baseline pain level of 7/10 or more.
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Distribution of baseline pain level"}
+
+df<-unclass(summary(t1$pain))%>%round(digits=1)
+knitr::kable(t(df), align = "l", caption="Distribution of baseline pain level" )
+
+ggplot(t1, aes(x=pain))+geom_histogram(binwidth = 1)+xlab("Baseline pain level (1-10)")
+```
+
+However, when looking at reported pain levels during the intervention, the average pain level is 5.5, and only 25% of observations reported a pain level of 7/10 or more.
+
+```{r  fig.height = 3, fig.width = 5, fig.cap="Distribution of weekly average pain level"}
+df<-unclass(summary(data$pain))%>%round(digits=1)
+knitr::kable(t(df), align = "l", caption="Distribution of weekly average pain level" )
+
+ggplot(data, aes(x=pain))+geom_histogram(binwidth = 1)+xlab("Weekly average pain level (1-10)")
+```
+
+
+**Weekly average stress level (0-10) **  
+Males reported a higher level of stress, compared to females (median 6/10 vs. 5/10).   
+The difference is noticeable in the higher levels of stress, above 6/10. 
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Weekly average stress level by gender"}
+
+df1<-unclass(summary(data$stress[data$gender=="Female"]))%>%round(digits=1)
+df2<-summary(data$stress[data$gender=="Male"])%>%round(digits=1)
+Gender=c("Females", "Males")
+df<-t(cbind(df1, df2))
+knitr::kable(cbind(Gender, df), row.names=FALSE, align = "l", caption="Weekly average stress level by gender" )
+
+
+ggdensity(data, x = "stress", add = "mean", rug = TRUE,
+   color = "gender", fill = "gender",
+   palette = c("#00AFBB", "#E7B800"))
+```
+
+**Training duration per week**  
+The distribution of duration of training per week was right asymmetric, with a median of 1,094 minutes (18 hours) per week. At least 75% of participants trained for 10 hours or more per week.   
+Males trained longer than females, and had a higher median training duration (1269 minutes per week compared to 985 minutes for women).
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Distribution of training duration per week"}
+df1<-unclass(summary(data$duration[data$gender=="Female"]))%>%round(digits=0)
+df2<-summary(data$duration[data$gender=="Male"])%>%round(digits=0)
+df3<-unclass(summary(data$duration))%>%round(digits=0)
+Gender=c("Females", "Males", "Total")
+df<-t(cbind(df1, df2, df3))
+knitr::kable(cbind(Gender, df), row.names=FALSE, align = "l", caption="Training duration per week by gender" )
+
+ggdensity(data, x = "duration", add = "mean", rug = TRUE,
+   color = "gender", fill = "gender",
+   palette = c("#00AFBB", "#E7B800"))
+```
+
+**Stress and reduced stress duration during training**  
+During training, heart rate variability (HRV) was recorded as a measure of stress level. 
+High HRV indicated reduced stress, and low HRV indicated stress.   
+Total training duration= stress duration+ reduced stress duration.
+
+```{r, fig.height = 3, fig.width = 5, fig.cap="Distribution of stress and reduced stress duration"}
+df1<-unclass(summary(data$stress_duration))%>%round(digits=0)
+df2<-unclass(summary(data$no_stress_duration))%>%round(digits=0)
+df<-t(cbind(df1, df2))
+Duration=c("Stress", "Reduced stress")
+knitr::kable(cbind(Duration, df) , row.names=FALSE, align = "l", caption="Stress and reduced stress duration per week" )
+
+d = data.frame(x = c(data$stress_duration, data$no_stress_duration), 
+               Duration=rep(c("Stress duration", "Reduced stress duration"), c(length(data$stress_duration), length(data$no_stress_duration))))
+
+ggplot(d) + geom_density(aes(x=x, colour=Duration))+xlab("Weekly duration (minutes)")
+```
+
+As we can see in figure 4.7, reduced stress duration (red) was longer than stress duration (light blue).
+
+
+Males and females had the same distribution of **stress** duration during training (fig. 4.8, left).   
+However, males had longer periods of **reduced stress** during training compared to females (fig. 4.8, right). 
+
+```{r fig.height = 4, fig.width = 8, fig.cap="Distribution of stress and reduced stress duration during training"}
+g1<-ggdensity(data, x = "stress_duration", add = "mean", rug = TRUE,
+   color = "gender", fill = "gender",
+   palette = c("#00AFBB", "#E7B800"))+xlab("Stress duration (min.)")
+ 
+g2<-ggdensity(data, x = "no_stress_duration", add = "mean", rug = TRUE,
+   color = "gender", fill = "gender",
+   palette = c("#00AFBB", "#E7B800"))+
+  xlab("Reduced stress duration (min.)")
+  #ggtitle("Distribution of reduced stress duration during session")
+
+  gridExtra::grid.arrange(g1, g2, ncol=2)
+```
+
+
+# Trajectory of pain, stress and training duration over time
+We analyzed the fluctuations of pain, stress and training duration during the 12-weeks intervention. Mixed models were used to analyze our data, as they are the preferred method for analysis of longitudinal and hierarchical data. All models were based on 2,959 observations from 777 participants, and models' assumptions were met.
+
+## Pain level
+In order to investigate pain fluctuations over time, we'll first look at the basic association between pain and time, before considering individual trends.  
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Pain level over time"}
+ggplot(data, aes(x=time, y=pain))+geom_jitter()+
+  xlab("Time (weeks)")+geom_smooth()+scale_x_continuous(breaks=c(1:12))+ylab("Pain level (1-10)")+scale_y_continuous(breaks=c(1:10))
+#downward trend in the first 3 weeks and then a plateau
+
+```
+
+We can see that the average initial pain level is around 7/10. There is a decrease within the first 3 weeks to a level of 5/10, and then a plateau.  
+
+To model the trajectory of pain over time we used a piecewise mixed model with 3 weeks as the turning point. This method allows us to fit different slopes for the 2 time intervals (weeks 1-3 and weeks 4-12).  
+
+```{r}
+#Piecewise model- 
+#section 1 is for time=1-3, section 2 is for time=4-12
+m<-lmer(pain~t1_3+t4_12+(1|id), data=data)
+tab_model(m, show.se=TRUE, show.ci = FALSE, show.re.var= FALSE, show.icc=FALSE,  show.r2=FALSE, dv.labels = "Pain over time")
+```
+
+There was a statistically significant decrease in pain level during weeks 1-3 but not during weeks 4-12.  
+In the first 3 weeks of training the estimate is -0.69 (SE= 0.04, p-value<0.001), meaning that each week of training is associated with a decrease of 0.69 units in the pain level scale (1-10).   
+During the following 4-12 weeks, there was no statistically significant change (est=0.01, SE=0.02, p-value=0.567).  
+
+To better understand how pain changed during the intervention and identify underlying trends, possible moderators were tested using piecewise mixed models.  
+Stress level and baseline pain level were statistically significant moderators of pain over time, while other variables that were tested were not (gender, age, age group, BMI and obesity, stress reduction, total duration of training per week and number of training days per week).
+
+### Stress
+to test stress as a moderator of pain level over time we used a piecewise linear mixed model with an interaction between stress level and time variables.
+
+```{r}
+m<-lmer(pain~ (t1_3+t4_12)*stress+(1|id) ,data=data, REML = T)
+tab_model(m, show.se=TRUE, show.ci = FALSE, show.re.var= FALSE, show.icc=FALSE, show.r2=FALSE, dv.labels = "Pain over time, moderated by stress level", pred.labels = c("(intercept)", "Weeks 1-3", "Weeks 4-12", "Stress level", "Wk 1-3:Stress", "Wk 4-12:Stress"))
+
+```
+
+Stress was a statistically significant moderator of the trajectory of pain over time for both times intervals (p-value<0.001 and 0.002). The interactions were investigated using simple slopes analysis. 
+
+**Weeks 1-3**
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Stress as a moderator of pain, weeks 1-3"}
+p1_3<-interact_plot(m, pred = t1_3, modx = stress, interval = T,modx.values="plus-minus",
+                   int.width = 0.8, x.label="Time (weeks 1-3)",y.label="Pain level (1-10)", legend.main="Stress",plot.points = TRUE)
+  #xlab=("Time (weeks 1-3)") +ylab=("Pain level (1-10)")
+
+p1_3
+ss<-sim_slopes(m, pred=t1_3, modx=stress)
+as_huxtable(ss)
+```
+
+In weeks 1-3 people with lower stress levels (-1SD, dashed line) had a slightly bigger decrease in pain level over time (est=-0.86, SE=0.06), compared to people with higher stress levels (+1SD, bold line, est=-0.58, SE=0.06). 
+
+**Weeks 4-12**
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Stress as a moderator of pain, weeks 4-12"}
+p4_12<-interact_plot(m, pred = t4_12, modx = stress, interval = T,modx.values="plus-minus",
+                 int.width = 0.8,x.label="Time (weeks 4-12)",y.label="Pain level (1-10)",
+                 legend.main="Stress level (0-10)",plot.points = TRUE)
+p4_12
+ss<-sim_slopes(m, pred=t4_12, modx=stress)
+as_huxtable(ss)
+```
+
+In week 4-12 the change in pain level is minimal, with the opposite trend- people with lower stress levels (dashed) show a slight increase in pain level (est=0.07, SE=0.03) compared to people with higher stress levels, who had a non-significant slope.    
+
+**Summary**  
+During the first 3 weeks pain declined over time, with a greater decline for people with lower stress levels. In weeks 4-12 people with lower stress levels had a slight increase in pain level.  
+
+
+### Baseline pain level {#pain_trends}
+There were different trends in pain fluctuations over time for participants with different baseline pain categories: low (1-3/10), medium (4-6/10) or high (7-10/10) baseline pain level.  
+The following plot depicts pain trends over time for the 3 pain groups:
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Pain level over time, by baseline pain category"}
+#pain over time, by baseline pain group
+ggplot(data, aes(y=pain, x=time, color=pain_group)) + 
+  #geom_point(size = 1.2, alpha = .8, position = "jitter")+
+  theme_minimal()+  geom_smooth(method = lm, se= FALSE, size = .5, alpha  = .8)+
+  xlab("Time (weeks)")+ ylab("Pain level (0-10)")+
+  scale_x_continuous(breaks=c(1:12))+
+  scale_y_continuous(breaks=c(1:10))+
+   labs(color='Pain level category') 
+```
+
+We can see that people who started with a high pain level had the highest decrease in pain over time. People with a medium level of pain maintained their pain level or had a slight decrease and people with lower baseline pain had an increase in pain level.    
+The same trend is visible when looking at individual participant trends in each pain level category (each line represents a single participant).  
+
+```{r fig.cap="Individual pain trajectory by pain category"}
+ggplot(data, aes(y=pain, x=time, group=id)) + facet_grid(.~pain_group)+
+  geom_point(size = 1.2, alpha = .8, position = "jitter")+
+  theme_minimal()+  geom_smooth(method = lm, se= FALSE, size = .5, alpha  = .8)+
+  xlab("Time (weeks)")+ ylab("Pain level (0-10)")
+```
+
+We tested baseline pain category as a moderator of pain over time with a piecewise mixed model.  
+
+```{r }
+
+m<-lmer(pain~(t1_3+t4_12)*pain_group+(1|id), data=data)
+tab_model(m, show.se=TRUE, show.ci = FALSE, show.re.var= FALSE, show.icc=FALSE, show.r2=FALSE,
+          dv.labels = "Pain over time, moderated by Pain level category",
+          pred.labels = c("Intercept", "Weeks 1-3", "Weeks 4-12", "Pain 4-6/10", "Pain 7-10/10", "Wk 1-3: Pain 4-6/10", "Wk 1-3: Pain 7-10/10", "Wk 4-12: Pain 4-6/10", "Wk 4-12: Pain 7-10/10"))
+```
+
+Pain level category was a statistically significant moderator for pain in both time intervals (weeks 1-3: p-value<0.001, weeks 4-12: p-value=0.015 and 0.031). The interactions were plotted and explored with post-hoc analysis.
+
+**Weeks 1-3**
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Pain level over weeks 1-3, by baseline pain level category"}
+#plotting the interaction
+library(emmeans)
+mylist <- list(t1_3=seq(1,3,by=1),pain_group=c("1-3/10","4-6/10", "7-10/10"))
+emmip(m, pain_group ~t1_3, at=mylist,CIs=TRUE)+xlab("Time (weeks 1-3)")+
+  ylab("Pain level (1-10)")+#ggtitle("Pain level over weeks 1-3, by baseline pain level category")+
+  labs(color='Pain level category')+  scale_x_continuous(breaks=c(1:3))
+```
+
+when plotting the interaction between baseline pain level category and time in weeks 1-3 we can see the same trends we spotted earlier. It looks like an example of the regression to the mean phenomenon, when higher and lower levels converge to the mean over time. However, these trends may also be related to other factors and should be investigated further. 
+
+```{r}
+
+#library(emmeans)
+#e<-emtrends(m, pairwise ~ pain_group, var = "t1_3")
+p<-c("Low (1-3/10)", "Medium(4-6/10)", "High (7-10/10)")
+est<-c("**1.29**", "**-0.32**", "**-1.21**")
+SE<-c("0.18", "0.16", "0.05")
+CIL<-c("0.94", "-0.64", "-1.30")
+CIU<-c("1.64", "-0.01", "-1.11")
+knitr::kable(cbind(p, est, SE, CIL, CIU), caption=c("Interaction slope estimates"), col.names=c("Pain level category", "Estimate", "SE", "CI lower", "CI upper" ))
+```
+
+People with **high baseline pain** (7-10/10) had an estimated slope of -1.21 (SE=0.048, CI=-1.3,-1.1), meaning that for these participants during the first 3 weeks, pain decreased by 1.21 units each week.   
+**Medium baseline pain** (4-6/10) had a smaller slope of -0.32 (SE=0.05, CI=-0.64, -0.01), meaning pain decreased to a smaller extent.   
+**Low baseline pain** level had a large positive slope of 1.29 (SE=0.18, CI=0.94, 1.64), meaning that pain increased by 1.29 units per week. Both medium and lower pain categories had a wide confidence interval due to a much smaller sample size.
+
+**Weeks 4-12**
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Pain level over weeks 1-3, by baseline pain level category"}
+#plotting the interaction
+library(emmeans)
+mylist <- list(t4_12=seq(4,12,by=1),pain_group=c("1-3/10","4-6/10", "7-10/10"))
+emmip(m, pain_group ~t4_12, at=mylist,CIs=TRUE)+xlab("Time (weeks 4-12)")+
+  ylab("Pain level (1-10)")+#ggtitle("Pain level over weeks 1-3, by baseline pain level category")+
+  labs(color='Pain level category')+  scale_x_continuous(breaks=c(4:12))
+```
+
+During weeks 4-12 people with **high baseline pain** (7-10/10) maintained their pain level, with an estimate of a 0.02 unit increase in pain level per week (SE=0.02).
+The trends for medium and low baseline pain are not statistically significant as their confidence intervals contain zero. This could be due to small sample sizes, especially near the end of the intervention.  
+
+```{r}
+#e<-emtrends(m, pairwise ~ pain_group, var = "t4_12")
+p<-c("Low (1-3/10)", "Medium(4-6/10)", "High (7-10/10)")
+est<-c("-0.13", "0.1", "**0.02**")
+SE<-c("0.07", "0.07", "0.02")
+CIL<-c("-0.27", "-0.03", "-0.009")
+CIU<-c("0.005", "0.24", "0.05")
+knitr::kable(cbind(p, est, SE, CIL, CIU), caption=c("Interaction slope estimates"), col.names=c("Pain level category", "Estimate", "SE", "CI lower", "CI upper" ))
+```
+
+### Summary
+Pain declined over time, mostly in the first 3 weeks.  
+People with **high baseline pain level** (7-10/10) had the biggest decrease in pain, with an estimated slope of -1.21 (CI=-1.3,-1.1) in the first 3 weeks and a slight increase afterwards, of 0.02 units in weeks 4-12.  
+**Medium baseline pain** (4-6/10) had a milder decline in pain level in the first 3 weeks (est=-0.32 (SE=0.05, CI=-0.64, -0.01)), while **low baseline pain** level had a large positive slope of 1.29 (SE=0.18, CI=0.94, 1.64), meaning that pain increased by 1.29 units per week. Both pain groups had a non-significant trend in weeks 4-12, probably due to a smaller sample size.  
+These findings fit the [pain trends plot](#pain_trends) we saw earlier. 
+
+## Stress level  
+Stress demonstrates the opposite trend to pain- stress levels increased over the first 3 weeks from roughly 4/10 to nearly 6/10 and stayed steady afterwards. 
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Stress level over time"}
+ggplot(data, aes(x=time, y=stress))+geom_jitter()+
+  xlab("Time (weeks)")+geom_smooth()+ylab("Stress level (1-10)")+
+  scale_x_continuous(breaks=c(1:12))
+```
+
+In addition, males showed a higher increase in stress compared to females in the first 3 weeks. In weeks 4-12 the confidence intervals overlap, so there may be no statistically significant difference between males and females. 
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Stress level over time, by gender"}
+ggplot(data, aes(x=time, y=stress, color=gender))+#geom_jitter()+
+  #ggtitle("Pain level over time, by gender")+
+  geom_smooth()+scale_x_continuous(breaks=c(1:12))+ xlab("Time (weeks)")+ylab("Stress level (1-10)")+labs(color = 'Gender')
+```
+
+We used piecewise mixed models to test the trajectory of stress over time, with 3 weeks as the turning point, with and without moderation by gender.
+
+```{r}
+m1 <- lmer(stress~t1_3+t4_12+ (1 |id) ,data=data, REML = T)
+m2 <- lmer(stress~t1_3*gender+t4_12*gender+ (1 |id) ,data=data, REML = T)
+tab_model(m1,m2, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=FALSE, show.icc=FALSE, dv.labels = c("Stress over time", "With moderation by gender"),
+          pred.labels = c("Intercept", "Weeks 1-3", "Weeks 4-12", "Gender (female)", "Wk 1-3: Gender (female)", "Wk 4-12: Gender (female)"))
+```
+
+The first model's regression results show that in the first 3 weeks there is a statistically significant increase in stress level, with an estimate of 0.61 (SE=0.03, p-value<0.001), meaning that each week is associated with an increase of 0.61 units in stress level (ranging 0-10). As expected, the association is not statistically significant for weeks 4-12 (p-value=0.09).  
+The second model had a statistically significant interaction between weeks 1-3 and gender. we explored this interaction further with post-hoc analysis.
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Stress level over weeks 1-3, by gender"}
+#emtrends(m2, pairwise ~ gender, var = "t1_3")
+mylist <- list(t1_3=seq(1,3,by=1),gender=c("Male","Female"))
+emmip(m2, gender ~t1_3, at=mylist,CIs=TRUE)+xlab("Time (weeks 1-3)")+
+  ylab("Stress level (1-10)")+
+  labs(color='Gender')+  scale_x_continuous(breaks=c(1:3))
+```
+
+Males had a bigger increase in stress over the first 3 weeks, compared to females (est=0.7 and 0.54, respectively).
+
+```{r}
+p<-c("Male", "Female")
+est<-c("0.70", "0.54")
+SE<-c("0.05", "0.04")
+CIL<-c("0.61", "0.46")
+CIU<-c("0.80", "0.63")
+knitr::kable(cbind(p, est, SE, CIL, CIU), caption=c("Interaction slope estimates"), col.names=c("Gender", "Estimate", "SE", "CI lower", "CI upper" ))
+
+```
+
+### Summary
+Stress levels increased during the first 3 weeks and remained at that level for the remainder of the follow-up. During the first 3 weeks, males had a bigger increase in stress levels compared to females (est=0.7 vs. 0.54).  
+
+## Training duration
+
+When plotting training duration over time , we can see an increase over the first 3 weeks, and then a decline.  
+Males trained longer each week compared to females. 
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Training duration over time, by gender"}
+
+ggplot(data, aes(x=time, y=duration, color=gender))+
+  geom_smooth()+scale_x_continuous(breaks=c(1:12))+
+  ylab("Weekly training duration (minutes)")+
+  xlab("Time (weeks)")+ labs(color='Gender')
+
+
+```
+
+We used piecewise mixed models to test the trajectory of training duration over time, with and without moderation by gender.
+
+```{r}
+m1 <- lmer(duration~t1_3+t4_12+ (1 |id) ,data=data, REML = T)
+m2 <- lmer(duration~t1_3*gender+t4_12*gender+ (1 |id) ,data=data, REML = T)
+tab_model(m1,m2, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=TRUE, show.icc=FALSE, dv.labels = c("Training duration over time", "With moderation by gender"),
+          pred.labels = c("Intercept", "Weeks 1-3", "Weeks 4-12", "Gender (female)", "Wk 1-3: Gender (female)", "Wk 4-12: Gender (female)"))
+
+```
+
+The first model's regression results show that there was no statistically significant change in training duration during the first 3 weeks, (est=21.28, SE=14.24, p-value=0.135).  
+In the following 4-12 weeks, there was a statistically significant decrease of 66.7 minutes per week (SE=6.34, p-value<0.001).  
+The second model shows that there is a statistically significant interaction between gender and duration of training for both time intervals. The interactions were plotted and explored with post-hoc analysis.
+
+**Weeks 1-3**
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Training duration over weeks 1-3, by gender"}
+#emtrends(m2, pairwise ~ gender, var = "t1_3")
+mylist <- list(t1_3=seq(1,3,by=1),gender=c("Male","Female"))
+emmip(m2, gender ~t1_3, at=mylist,CIs=TRUE)+xlab("Time (weeks 1-3)")+
+  ylab("Weekly training duration")+
+  labs(color='Gender')+  scale_x_continuous(breaks=c(1:3))
+```
+
+During the first 3 weeks, training duration increased for males but not for females. The estimated slope for males was 54 minutes (SE=21.2, CI=(12.3, 95.6)), and the slope for females was not statistically significant (est=-7.3, SE=19.2, CI=(-44.9, 30.3)). This means that during weeks 1-3 males had an increase of 54 minutes per week, and females had no statistically significant change in training duration.
+
+**Weeks 4-12**
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Training duration over weeks 4-12, by gender"}
+#emtrends(m2, pairwise ~ gender, var = "t4_12")
+mylist <- list(t4_12=seq(4,12,by=1),gender=c("Male", "Female"))
+emmip(m2, gender ~t4_12, at=mylist,CIs=TRUE)+xlab("Time (weeks 4-12)")+
+  ylab("Weekly training duration (minutes)")
+```
+
+During weeks 4-12 males had a bigger decline in training duration compared to females, with an estimated slope of -81.2 minutes (SE=9.3, CI=(-99.4, -63.0)) vs. -54.0 minutes (SE=8.64, cI=(-71, -37.1)). The confidence intervals overlap due to fewer observations in later weeks.  
+
+### Summary
+For males, weekly training duration increased in the first 3 weeks and declined later.
+For females, weekly training duration had no significant changes in the first 3 weeks and then had a milder decline.
+
+
+## Conclusions
+**Pain** declined over time, mostly in the first 3 weeks.  
+During the first 3 weeks, people with high baseline pain level (7-10/10) had the biggest decrease in pain, people with medium pain (4-6/10) had a milder decrease and people with low baseline pain suffered an increase, in a regression to the mean fashion. In addition, lower stress levels were associated with a bigger decrease in pain level in weeks 1-3.  
+**Stress** levels increased during the first 3 weeks and remained at that level for the remainder of the follow-up. During the first 3 weeks, males had a bigger increase in stress levels compared to females.  
+**Training duration** increased for males in the first 3 weeks and declined later. For females, weekly training duration had no significant changes in the first 3 weeks and then a milder decline.
+
+
+# The effect of training on pain, stress and duration of training
+
+Two variables were chosen for testing the effect of training:  
+1. **Total weekly duration of training**- duration was scaled down by a factor of 1/100 to match the scale of other variables.  
+2. **Stress reduction**- percent of training duration that was stress-free (training time in which stress was reduced divided by total duration of training). It was scaled by a factor of 10 to match the scale of other variables. Stress reduction variable ranged between 0 (no stress reduction during training) and 10 (complete stress reduction). A higher score means that the participant succeeded in reducing stress during training.   
+
+These two variables give a quantitative and a qualitative description of the intervention.
+
+```{r}
+
+library(DataCombine)
+data <- slide(data = data, Var = c('success'), GroupVar = c('id'),
+            NewVar = c('successl'), slideBy = c(-1), keepInvalid = TRUE) 
+Hmisc::label(data$successl)<-"Stress reduction (lagged)"
+
+data <- slide(data = data, Var = c('durations'), GroupVar = c('id'),
+            NewVar = c('durationl'), slideBy = c(-1), keepInvalid = TRUE) 
+Hmisc::label(data$durationl)<-"Training duration (lagged)"
+
+df3<-data.frame(val = unclass(summary(data$success)))%>%round(digits=2)
+knitr::kable(t(df3), align = "l", row.names=FALSE, caption="Stress reduction descriptive statistics" )
+```
+
+Half of observations had a stress reduction score of 8 or higher, meaning that half the time the participants were able to reduce stress for 80% of the training duration, or more. 
+
+In order to account for time-lagged effects that may occur in longitudinal models, lagged variables of stress reduction and total training duration were created. These variables can help us to identify latent effects of training.   
+It should be remembered that we have a lot of gaps between weeks, so pain, stress or training duration may not demonstrate a statistically significant correlation to the lagged variable of a few weeks earlier. 
+
+The effect of training was tested by piecewise mixed models with these 4 variables (duration, stress reduction and their lagged variables), for our 3 outcome variables: Pain, stress and training duration.
+
+## Pain level
+### Effect of stress reduction on pain level
+We used piecewise mixed models with stress reduction and lagged-stress reduction to see if training had an effect on stress levels over time.
+
+```{r}
+m1<-lmer(pain~ (t1_3+t4_12)+success+(1|id) ,data=data, REML = T)
+m3<-lmer(pain~ (t1_3+t4_12)+successl+(1|id) ,data=data, REML = T)
+tab_model(m1, m3, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=FALSE, show.aic=FALSE, show.icc=FALSE, dv.labels = c("Pain by stress reduction", "Pain by lagged-stress reduction"))
+```
+
+In the first model there was a statistically significant association between stress reduction and pain, with an estimate of -0.06 (SE=0.02, p-value=0.008). This means that each 1 unit increase in stress reduction (on a 1-10 scale) is associated with a 0.06 unit decrease in pain. To illustrate, going from 0% reduced stress to 100% reduced stress during training is associated with a 0.6 unit decrease in pain level. This is a weak association, and it has no clinical relevance.  
+In the second model, lagged-reduced stress was not significantly associated with pain levels. This finding undermines the hypothesis that stress reduction has an effect on pain levels and implies that if such association exists, it is probably not causal.  
+
+We already know that pain fluctuations are moderated by baseline pain category. A piecewise mixed model with this moderator was tested to further explore the association between stress reduction and pain.
+
+```{r}
+m1<-lmer(pain~ (t1_3+t4_12)*pain_group+success+(1|id) ,data=data, REML = T)
+
+tab_model(m1, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=FALSE, show.aic=FALSE, show.icc=FALSE, dv.labels = c("Pain by training, moderated by pain category"), pred.labels = c("(Intercept)", "Weeks 1-3", "Weeks 4-12", "Pain group 4-6/10", "Pain group 7-10/10", "Stress reduction", "Wk 1-3:Pain group 4-6/10", "Wk 1-3:Pain group 7-10/10", "Wk 4-12:Pain group 4-6/10", "Wk 4-12:Pain group 7-10/10"))
+```
+
+After controlling for the moderator baseline pain category, the effect of stress reduction on pain over time is not statistically significant (est=-0.04, SE=0.02, p-value=0.064).  
+
+### Effect of training duration on pain level
+We used piecewise mixed models with training duration and lagged-training duration to see if training had an effect on pain levels over time.  
+
+```{r}
+m1<-lmer(pain~ (t1_3+t4_12)+durations+(1|id) ,data=data, REML = T)
+m3<-lmer(pain~ (t1_3+t4_12)+durationl+(1|id) ,data=data, REML = T)
+
+tab_model(m1, m3, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=FALSE, show.aic=FALSE, dv.labels = c("Pain by training duration", "Pain by lagged-training duration"))
+```
+
+**Total weekly duration of training** was statistically significant (p-value=0.002), with an estimate of -0.01 (SE=0.00). The same results were obtained when tested with moderation by baseline pain category. This means that each additional 100 minutes of training per week is associated with a decrease of 0.01 units of pain. This correlation is negligible and not clinically relevant. In order to decrease pain level in one unit on a scale of 1 to 10, one would need to add 10,000 minutes of training per week.   
+In addition, **lagged-duration** was not significantly correlated to pain over time (p-value=0.78).
+
+### Summary
+Once controlling for baseline pain level, pain level is not correlated to stress reduction. Pain level is correlated to training duration, but the effect is negligible (est=-0.01, SE=0.00) and clinically irrelevant.  
+we can conclude that no significant correlation was found between training and pain over time.
+
+## Stress level
+
+### Effect of stress reduction on stress level
+We used piecewise mixed models with stress reduction and lagged-stress reduction to see if training had an effect on stress levels over time.  
+
+```{r}
+m1<-lmer(stress~ (t1_3+t4_12)+success+(1|id) ,data=data, REML = T)
+m2<-lmer(stress~ (t1_3+t4_12)+successl+(1|id) ,data=data, REML = T)
+
+tab_model(m1, m2, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=TRUE, show.icc=FALSE, dv.labels = c("Stress by stress reduction", "Stress by lagged-stress reduction"))
+```
+
+Both **stress reduction** and **lagged-stress reduction** were significantly associated with stress level (p-value<0.001) with the same estimate of 0.13 (SE=0.02). 
+Each 1 unit increase in stress reduction or lagged-stress reduction is associated with a 0.13 unit increase in stress level.   
+Paradoxically, the correlations are positive- better stress reduction is associated with slightly increased stress levels.  
+We can see that the model with lagged-stress reduction had higher $R^2$ (0.71 vs. 0.55), meaning that it explains stress levels better. This could imply semi-causality.
+
+### Effect of training duration on stress level
+We used piecewise mixed models with training duration and lagged-training duration to see if training had an effect on stress levels over time.
+
+```{r}
+m1<-lmer(stress~ (t1_3+t4_12)+durations+(1|id) ,data=data, REML = T)
+m2<-lmer(stress~ (t1_3+t4_12)+durationl+(1|id) ,data=data, REML = T)
+
+tab_model(m1, m2, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=FALSE, show.icc=FALSE, dv.labels = c("Stress by training duration", "Stress by lagged-training duration"))
+```
+
+Both **duration** and **lagged-duration** had a statistically significant correlation to stress level (p-value<0.001), with a negligible estimate of 0.02 (SE=0.00), meaning that each 100 minute increase in weekly training time is associated with an increase of 0.02 units in stress level. 
+
+### Summary
+There is a small positive correlation between stress level and stress reduction and lagged-stress reduction (est=0.13, SE=0.02). The correlation between lagged-stress reduction and stress may imply semi-causation.    
+The correlation between stress level and duration (scaled by 1/100) and lagged-duration was negligible (est=0.02, SE=0.00).
+
+## Training duration
+Piecewise mixed models were used to test the effect of stress reduction, lagged-stress reduction and lagged-training duration on training duration over time.
+
+```{r}
+m1<-lmer(duration~(t1_3+t4_12)+success+(1|id) ,data=data, REML = T)
+m2<-lmer(duration~(t1_3+t4_12)+successl+(1|id) ,data=data, REML = T)
+m3<-lmer(duration~(t1_3+t4_12)+durationl+(1|id) ,data=data, REML = T)
+tab_model(m1, m2, m3, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=FALSE, show.icc=FALSE, dv.labels=c("By stress reduction", "By lagged-stress reduction", "By lagged-duration"),
+          title=c("Training duration"))
+```
+
+**Stress reduction** was significantly correlated to training duration (p-value<0.001), with an estimate of 38.9 minutes (SE=9.22), meaning that each 1 unit increase in stress reduction is associated with an increase of 38.9 minutes in training duration that week.  
+
+The **lagged-stress reduction** variable was not significantly correlated to training duration (p-value=0.24), so we can't conclude that stress reduction has a long-term effect on training duration.   
+The correlation between stress reduction and training duration may also be due to reverse causality- longer training time can be the cause of better stress reduction (practice makes perfect).  
+Training duration was also significantly correlated to **lagged-training duration** (p-value<0.001), with an estimate of 24.8 (SE=1.92), meaning that each 100 minute increase in weekly training duration in the previous week is correlated to a 25 minute increase on the following week.
+
+### Summary
+Training duration is correlated to stress reduction, but not to lagged-stress reduction. There may be a reverse causation effect (duration influences stress reduction), or simultaneity (duration and stress reduction influence each other).  
+Training duration is also significantly correlated to lagged-training duration with a weak correlation.
+
+## Conclusions
+No statistically significant effect was found for training on **pain level**.  
+Stress reduction and lagged-stress reduction had a small positive correlation to **stress level** (est=0.13, SE=0.02). The correlation between lagged-stress reduction and stress level may imply semi-causation, meaning that an increase in stress reduction may promote higher stress levels in the following week. Either way, the correlation is weak, and further research is warranted.   
+**Training duration** was correlated to stress reduction, but not to lagged-stress reduction and this may imply reverse causation or simultaneity.
+
+
+# Mediation model: Training duration>>Stress>>Pain
+A mediation model was used to test if stress is a mediator in the correlation between training duration and pain.
+
+There are 3 stages to testing the mediation model:  
+1. direct model: can pain level be predicted by training duration?  
+2. model a: can stress level be predicted by training duration?  
+3. model b: when predicting pain level by stress level and training duration, is training duration still significant?
+
+## Mediation models
+We used piecewise mixed models to test these 3 hypotheses:
+
+```{r}
+#direct model: pain~duration
+m_d<-lmer(pain~ t1_3+t4_12+durations+(1|id) ,data=data, REML = T)
+
+#model a: stress~duration
+m_a<-lmer(stress~ t1_3+t4_12+durations+(1|id) ,data=data, REML = T)
+
+#model b: pain~stress+duration
+m_b<-lmer(pain~ t1_3+t4_12+durations+stress+(1|id) ,data=data, REML = T)
+
+tab_model(m_d, m_a, m_b, show.se = FALSE, show.ci = FALSE, show.re.var= FALSE, show.r2=FALSE, show.icc=FALSE, dv.labels = c("Direct model: Pain~duration", "Model a: Stress~duration", "Model b: Pain~duration+stress"),
+          title=c("Mediation analysis: Training duration >> Stress >> Pain"))
+
+```
+
+Training duration had a statistically significant correlation to pain (direct model) and stress (model a), and it was also significant in the final model (model b), after controlling for the mediator stress. We can conclude that the effect of training duration on pain is partially mediated by stress.  
+It should be noted that the estimates for training duration (scaled) are negligible (a 0.01 unit decrease in pain for each 100 additional minutes of training each week).   
+These results have no clinical significance and the remainder of this analysis is purely academic.  
+
+## Causal mediation analysis
+we will proceed to calculating the effect of the mediation:  
+Stress level had a slight positive effect on pain (est=0.05, p-value=0.005) and training duration had a slight negative effect on pain (est= -0.01, p-value=0.003).  
+The **indirect effect - ab** is $a*b = (-0.01)*0.05= 0.0005$.   
+The **direct effect - c'**, is the effect of training duration on pain level. The direct model shows that the estimate for this effect is -0.01 (p-value=0.005).
+
+To determine if the indirect effect is statistically significant We will need to compute its confidence interval. This can be achieved with causal mediation analysis.
+
+To test the significance of this mediation model our null hypothesis is that ab, the indirect effect, equals zero. Our alternative hypothesis is that ab is different from zero.
+To test this hypothesis we will estimate the indirect effect ab and its confidence interval by using bootstrapping. This method draws a sample with replacement from the population, calculates a, b and ab and repeats the process 500 times. A distribution of ab is generated, from which we can derive an estimate for ab and its 95% confidence interval.  
+The same procedure was performed for c', the direct effect.
+
+```{r warning=FALSE }
+Estimate<-c("0.00084", "-0.014")
+CI_Lower<-c("0.00019", "-0.022")
+CI_Upper<-c("0.00", "-0.01")
+#p_value<-c("0.06", "0.00")
+Effect<-c("ACME", "ADE")
+Type<-c("Indirect (ab)", "Direct (c')")
+med<-cbind(Effect, Type, Estimate, CI_Lower, CI_Upper)
+knitr::kable(med, col.names=c("Effect", "Type", "Estimate","CI lower bound", "CI upper bound"), caption="Bootstrapped estimates and 95% confidence interval for mediation model")
+
+```
+
+**ACME- Average Causal Mediation Effects** is the indirect effect of training duration on pain level, mediated by stress level. The bootstrapped unstandardized indirect effect was 0.00084, (not far from the 0.0005 estimate we calculated earlier) and the 95% confidence interval contained 0. The null hypothesis cannot be rejected and the conclusion is that the indirect effect equals zero.
+
+**ADE- Average Direct Effect** is the direct effect of training duration on pain level. The bootstrapped unstandardized direct effect was -0.014 (CI= -0.022, -0.01). The indirect effect is statistically significant.
+
+## Conclusions
+After testing the direct and indirect effect of training duration on pain level with stress level as a mediator in casual mediation analysis with 95% confidence interval bootstrapping for mediation estimates and confidence interval, a mediation effect was not found. 
+
+# Moderators of the mediation model
+Age, gender weight, height and BMI were tested as possible moderators of the 3 mediation models. The moderation hypotheses were tested using piecewise mixed models with an interaction between these variables and the main effects (training duration, stress level) of the 3 models.  
+one interaction was statistically significant- an interaction between gender and stress in model b: pain by training duration and stress. 
+
+## Gender as a moderator of model b
+
+```{r}
+m<-lmer(pain~ t1_3+t4_12+stress*gender+durations+(1|id) ,data=data, REML = T)
+tab_model(m, show.se = TRUE, show.ci = FALSE, show.re.var= FALSE, show.r2=FALSE, show.icc=FALSE, dv.labels = c("Pain~duration + stress*gender"))
+```
+
+The interaction between gender and stress was analyzed using simple slopes analysis.
+
+```{r fig.height = 3, fig.width = 5, fig.cap="Pain level and stress level by gender"}
+interact_plot(m, pred=stress, modx=gender, interval = FALSE, 
+              x.label="Stress",
+              y.label = "Pain level (0-10)",
+              main.title ="Pain level and stress level by gender", 
+              legend.main = "Gender",
+              data=data)
+ss<-sim_slopes(m, pred=stress, modx=gender)
+as_huxtable(ss)
+```
+
+For females, the slope estimate was 0.01 (SE=0.02) and was not statistically significant.  
+For males, the slope estimate was 0.10 (SE=0.03) and was statistically significant.  
+This means that the correlation between stress and pain is statistically significant for males (and not females), even after controlling for time and training duration, with an estimated 0.1 unit increase in pain level for each 1 unit increase in stress level. This means that an increase of stress level from 1 to 10 is associated with an increase of 1 unit in the pain scale. 
+
+## Summary
+Variables age, gender, weight, height and BMI were tested as possible moderators of the mediation model. Gender had a statistically significant yet very small moderating effect in model b (pain by training duration and stress).
+
+# Conclusions
+**Pain** declined over time, mostly in the first 3 weeks and then stabilized. People with high baseline pain level (7-10/10) had the biggest decrease in pain, people with medium pain (4-6/10) had a milder decrease and people with low baseline pain had a small increase, in a regression to the mean fashion. In addition, lower stress levels were associated with a bigger decrease in pain level in weeks 1-3. However, training did not have a significant effect on pain during the intervention, once controlling for the baseline pain level.  
+**Stress** levels increased during the first 3 weeks and remained at that level for the remainder of the intervention. During the first 3 weeks, males had a bigger increase in stress levels compared to females. Stress also had a small positive correlation to stress reduction and legged-stress reduction during training, implying causality.      
+**Training duration** increased for males in the first 3 weeks and declined later, with milder trends for females. Training duration is correlated to stress reduction, but not to lagged-stress reduction. There may be a reverse causation effect or simultaneity.  
+
+Our study had significant [limitations](#Study limitations) that should be taken under consideration. Further research is warranted due to design and analysis limitations. 
+
+# Study limitations
+**Missing data**  
+There were a lot of incomplete or absent data entries (weeks in which the participants did not enter pain and stress levels or did not train at all). 2,617 observations were omitted due to missing pain and stress levels, and for most participants there are gaps between recorded observations. This missing information makes it harder for us to determine the real trajectory of pain and stress over time, and analyze the effect of training on stress and pain levels.  
+There are algorithms that can fill these gaps with plausible values based on the available data. However, our data set has at least 4,152 gaps (vs. 2,959 complete observations). The imputed data was very likely to bias our results, so imputation was not recommended in this case.   
+In addition, there were no substantial correlations between our outcome variables and other variables, so we couldn't use existing data to derive plausible values for the missing pain and stress levels.     
+Mixed models are well-suited for handling missing data in longitudinal data, when assuming data is missing completely at random (MCAR) or missing at random (MAR).  
+Our data may not be missing at random. There is a chance that the absent information for stress and pain depends on the hypothetical value of stress and pain that week. For instance, people with high pain/stress levels may have avoided reporting it to placate the researcher, or were too preoccupied to train that week. It's also possible that people with low pain/stress levels allowed themselves to skip training or miss reporting their pain/stress levels. Missing values may also dependent on an unobserved variable’s value.  
+Thus, we cannot assume that this data is missing at random, as assumed by the linear mixed model. It would have been best to use a joint model to address missingness, and this is a limitation of our analysis.
+
+**Selection bias**  
+Out of 983 participants, 177 participants (18%) entered pain/stress levels for only one week and 29 participants (3%) not at all. Without outcome values, these participants' data could not be used, and they were excluded. Analysis of these participants was out of the scope of this study, but this non-compliance proportion should be taken under consideration when evaluating the intervention's effects. 
+
+**Endogeneity**  
+our outcome variables (pain, stress and duration) are endogenous, they are driven by other factors, unknown factors as well as observed factors. There may be factors that influence both stress and pain and also training duration or effectiveness.
+
+**Reverse causality/simultaneity**  
+pain/stress levels could influence training duration and/or stress reduction effectiveness and vice versa. For instance, people with higher pain/stress levels may have a stronger motive to practice longer or may have better success in reducing stress because of a high baseline. The opposite is possible as well- people with higher pain/stress levels may be too preoccupied to practice or have poorer results due to difficulty to concentrate. 
+
+
+
+
+
+
+
