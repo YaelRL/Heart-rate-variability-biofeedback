@@ -1,5 +1,5 @@
 ---
-title: "Biostatistics projects: Project 3"
+title: "Heart rate biofeedback for chronic low back pain"
 author: "Yael Rosen Lang"
 date: "8 12 2021"
 Author: "Yael Rosen Lang, ID 035801901"
@@ -26,6 +26,8 @@ library("readxl")
 
 ```
 
+By: Yael Rosen Lang
+
 #  Abstract
 **Aim**- This study's goal was to investigate the effect of a biofeedback stress reduction intervention on pain among people with chronic low back pain.   
 **Methods**- Heart rate variability (HRV) was used to assess autonomic function, with high HRV indicating high activity of the parasympathetic nervous system (low stress levels) and low HRV indicating dominance of the sympathetic nervous system (high stress levels).   
@@ -38,8 +40,7 @@ The data was imported from excel to R (R Core Team (2020). R: A language and env
 Our data set consisted of 5,753 observations from 983 participants. 
 
 ```{r}
-data=read_xlsx(path='F:/My Documents/MPH/Biostatistics_projects/3 HRV biofeedback/pr3_stud.xlsx', 
-                sheet="pr3_stud", guess_max = 5000, na=c("-99", "NA"))
+data=read_xlsx(path='C:/Users/user/Desktop/yael/MPH/Biostatistics_projects/3 HRV biofeedback/pr3_stud.xlsx',sheet="pr3_stud", guess_max = 5000, na=c("-99", "NA"))
 #renaming
 names(data)[names(data)=='avg_pain']<-'pain'
 names(data)[names(data)=='avg_stress']<-'stress'
